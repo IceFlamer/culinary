@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import random
 from PIL import Image
 import os
@@ -16,59 +15,73 @@ st.set_page_config(
 st.title("🍀 Гача-симулятор: Выпадение ингредиентов")
 st.markdown("---")
 
-# Функция для загрузки и обработки данных
-@st.cache_data
+# Функция для загрузки данных (упрощенная)
 def load_data(file):
     """Загружает Excel-файл и подготавливает веса для вероятностного выбора."""
-    df = pd.read_excel(file, engine='openpyxl')
+    try:
+        df = pd.read_excel(file, engine='openpyxl')
+        
+        # Проверяем минимальное количество столбцов
+        if len(df.columns) < 4:
+            st.error("❌ В файле должно быть как минимум 4 столбца: №, Название, Изображение, Редкость")
+            return None
+        
+        # Используем первые 4 столбца
+        df = df.iloc[:, :4].copy()
+        df.columns = ['id', 'name', 'image', 'rarity']
+        
+        # Проверяем типы данных
+        df['id'] = pd.to_numeric(df['id'], errors='coerce')
+        df['rarity'] = pd.to_numeric(df['rarity'], errors='coerce')
+        
+        # Удаляем строки с NaN в важных столбцах
+        df = df.dropna(subset=['id', 'name', 'rarity'])
+        
+        # Проверяем диапазон редкости
+        if not df['rarity'].between(1, 3).all():
+            st.warning("⚠️ Некоторые значения редкости не в диапазоне 1-3. Будут использованы только корректные значения.")
+            df = df[df['rarity'].between(1, 3)]
+        
+        # Создаем веса на основе редкости
+        df['weight'] = df['rarity']
+        
+        return df
     
-    # Проверяем структуру данных
-    required_columns = [0, 1, 2, 3]  # Индексы столбцов A, B, C, D
-    if df.shape[1] < 4:
-        st.error("❌ В файле должно быть как минимум 4 столбца: №, Название, Изображение, Редкость")
+    except Exception as e:
+        st.error(f"❌ Ошибка при чтении файла: {str(e)}")
         return None
-    
-    # Переименовываем столбцы для удобства
-    df.columns = ['id', 'name', 'image', 'rarity'] + list(df.columns[4:])
-    
-    # Создаем веса на основе редкости (чем выше редкость, тем чаще выпадает)
-    # Редкость 3 -> вес 3, редкость 2 -> вес 2, редкость 1 -> вес 1
-    df['weight'] = df['rarity']
-    
-    # Нормализуем веса (делаем их вероятностями)
-    total_weight = df['weight'].sum()
-    df['probability'] = df['weight'] / total_weight
-    
-    return df
 
 # Функция для генерации выпавших ингредиентов
 def generate_drops(df, num_drops):
     """Генерирует случайные ингредиенты с учетом редкости."""
-    if df is None:
+    if df is None or len(df) == 0:
         return []
     
-    # Используем вероятностный выбор с учетом весов
-    # Можно использовать random.choices с параметром weights
-    indices = random.choices(
-        range(len(df)), 
-        weights=df['weight'].values, 
-        k=num_drops
-    )
-    
-    results = []
-    for idx in indices:
-        ingredient = df.iloc[idx]
-        results.append({
-            'id': ingredient['id'],
-            'name': ingredient['name'],
-            'image': ingredient['image'],
-            'rarity': ingredient['rarity']
-        })
-    
-    return results
+    try:
+        # Используем вероятностный выбор с учетом весов
+        indices = random.choices(
+            range(len(df)), 
+            weights=df['weight'].values, 
+            k=num_drops
+        )
+        
+        results = []
+        for idx in indices:
+            ingredient = df.iloc[idx]
+            results.append({
+                'id': int(ingredient['id']) if pd.notna(ingredient['id']) else 0,
+                'name': str(ingredient['name']),
+                'image': str(ingredient['image']) if pd.notna(ingredient['image']) else '',
+                'rarity': int(ingredient['rarity']) if pd.notna(ingredient['rarity']) else 3
+            })
+        
+        return results
+    except Exception as e:
+        st.error(f"❌ Ошибка при генерации: {str(e)}")
+        return []
 
 # Функция для отображения карточки ингредиента
-def display_ingredient_card(ingredient, images_dir):
+def display_ingredient_card(ingredient, images_dir="images"):
     """Создает карточку для отображения ингредиента."""
     # Цвет рамки в зависимости от редкости
     rarity_colors = {
@@ -78,54 +91,42 @@ def display_ingredient_card(ingredient, images_dir):
     }
     
     # Полный путь к изображению
-    image_path = os.path.join(images_dir, ingredient['image'])
+    image_file = ingredient.get('image', '')
+    img_display = None
     
-    # Проверяем существование файла
-    if os.path.exists(image_path):
-        try:
-            img = Image.open(image_path)
-            # Масштабируем изображение
-            img.thumbnail((200, 200))
-        except Exception as e:
-            # Если не удалось загрузить изображение, используем заглушку
-            img = Image.new('RGB', (200, 200), color='lightgray')
-    else:
-        # Заглушка если файл не найден
-        img = Image.new('RGB', (200, 200), color='lightgray')
+    if image_file and isinstance(image_file, str):
+        image_path = os.path.join(images_dir, image_file)
+        if os.path.exists(image_path):
+            try:
+                img = Image.open(image_path)
+                img.thumbnail((150, 150))
+                img_display = img
+            except:
+                img_display = None
+    
+    # Если изображение не загружено, создаем заглушку
+    if img_display is None:
+        # Создаем простой цветной квадрат
+        rarity = ingredient.get('rarity', 3)
+        color = rarity_colors.get(rarity, "#CD7F32")
+        
+        # Создаем изображение с помощью PIL
+        img = Image.new('RGB', (150, 150), color=color)
+        img_display = img
     
     # Создаем карточку
-    with st.container():
-        # Рамка с цветом в зависимости от редкости
-        st.markdown(f"""
-        <div style="
-            border: 3px solid {rarity_colors[ingredient['rarity']]};
-            border-radius: 10px;
-            padding: 10px;
-            text-align: center;
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            margin: 5px;
-            height: 320px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        ">
-        """, unsafe_allow_html=True)
-        
-        # Отображаем изображение
-        st.image(img, width=150)
-        
-        # Название и редкость
-        st.markdown(f"**{ingredient['name']}**")
-        
-        # Звездочки для редкости
-        stars = "★" * (4 - ingredient['rarity'])  # Инвертируем: 1 редкость = 3 звезды
-        st.markdown(f"<span style='color: {rarity_colors[ingredient['rarity']]};'>{stars}</span>", 
-                   unsafe_allow_html=True)
-        
-        # ID ингредиента (опционально)
-        st.markdown(f"<small>ID: {ingredient['id']}</small>", unsafe_allow_html=True)
-        
-        st.markdown("</div>", unsafe_allow_html=True)
+    name = ingredient.get('name', 'Неизвестно')
+    rarity = ingredient.get('rarity', 3)
+    color = rarity_colors.get(rarity, "#CD7F32")
+    
+    # Отображаем карточку
+    st.image(img_display, width=150)
+    st.markdown(f"**{name}**")
+    
+    # Звездочки для редкости
+    stars_count = 4 - rarity
+    stars = "★" * stars_count
+    st.markdown(f'<span style="color: {color};">{stars}</span>', unsafe_allow_html=True)
 
 # Основной интерфейс приложения
 def main():
@@ -135,15 +136,41 @@ def main():
         
         # Загрузка файла
         uploaded_file = st.file_uploader(
-            "📂 Загрузите Excel-файл с ингредиентами", 
-            type=['xlsx', 'xls']
+            "📂 Загрузите Excel-файл", 
+            type=['xlsx', 'xls'],
+            help="Файл должен содержать 4 столбца: №, Название, Изображение, Редкость"
         )
         
+        # Пример файла для скачивания
+        if not uploaded_file:
+            st.markdown("---")
+            st.markdown("### 📋 Пример файла")
+            # Создаем пример данных
+            example_data = pd.DataFrame({
+                '№': [1, 2, 3, 4, 5],
+                'Название': ['Яблоко', 'Банан', 'Апельсин', 'Манго', 'Дуриан'],
+                'Изображение': ['apple.png', 'banana.png', 'orange.png', 'mango.png', 'durian.png'],
+                'Редкость': [3, 3, 3, 2, 1]
+            })
+            
+            # Кнопка для скачивания примера
+            @st.cache_data
+            def convert_df_to_csv(df):
+                return df.to_csv(index=False).encode('utf-8')
+            
+            csv = convert_df_to_csv(example_data)
+            st.download_button(
+                label="📥 Скачать пример (CSV)",
+                data=csv,
+                file_name="ingredients_example.csv",
+                mime="text/csv",
+            )
+        
         # Ввод количества ингредиентов
-        num_drops = st.number_input(
-            "🎲 Количество ингредиентов для генерации",
+        num_drops = st.slider(
+            "🎲 Количество ингредиентов",
             min_value=1,
-            max_value=100,
+            max_value=50,
             value=12,
             step=1
         )
@@ -155,108 +182,102 @@ def main():
             use_container_width=True
         )
         
-        # Информация о вероятностях
         st.markdown("---")
-        st.markdown("### 📊 Шансы выпадения")
+        st.markdown("### 📊 Система редкости")
         st.markdown("""
-        - 🥉 **Редкость 3**: Частое выпадение (наибольший вес)
-        - 🥈 **Редкость 2**: Среднее выпадение
-        - 🥇 **Редкость 1**: Редкое выпадение (наименьший вес)
+        - **🥉 Редкость 3** (3 звезды) - Частое выпадение
+        - **🥈 Редкость 2** (2 звезды) - Среднее выпадение  
+        - **🥇 Редкость 1** (1 звезда) - Редкое выпадение
         """)
-        
-        # Путь к папке с изображениями
-        st.markdown("---")
-        st.markdown("### 📁 Папка с изображениями")
-        st.info("Убедитесь, что в папке 'images' есть все файлы, указанные в Excel.")
     
     # Основная область
     if uploaded_file is not None:
-        # Загружаем данные
-        df = load_data(uploaded_file)
-        
-        if df is not None:
-            # Показываем статистику
-            st.subheader("📈 Статистика ингредиентов")
+        try:
+            # Загружаем данные
+            df = load_data(uploaded_file)
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Всего ингредиентов", len(df))
-            with col2:
-                rare_count = len(df[df['rarity'] == 1])
-                st.metric("Редких (⭐)", rare_count)
-            with col3:
-                common_count = len(df[df['rarity'] == 3])
-                st.metric("Частых (⭐⭐⭐)", common_count)
-            
-            # Таблица с данными
-            with st.expander("📋 Просмотреть все ингредиенты"):
-                st.dataframe(df[['id', 'name', 'rarity', 'probability']].style.format({
-                    'probability': '{:.2%}'
-                }))
-            
-            # Генерация при нажатии кнопки
-            if generate_button:
-                st.markdown("---")
-                st.subheader(f"🎁 Результаты: {num_drops} выпавших ингредиентов")
+            if df is not None and not df.empty:
+                # Показываем статистику
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Всего ингредиентов", len(df))
+                with col2:
+                    rare_count = len(df[df['rarity'] == 1])
+                    st.metric("Редких", rare_count)
+                with col3:
+                    common_count = len(df[df['rarity'] == 3])
+                    st.metric("Частых", common_count)
                 
-                # Генерируем выпавшие ингредиенты
-                drops = generate_drops(df, num_drops)
+                # Генерация при нажатии кнопки
+                if generate_button:
+                    st.markdown("---")
+                    st.subheader(f"🎁 Результаты: {num_drops} выпавших ингредиентов")
+                    
+                    # Генерируем выпавшие ингредиенты
+                    drops = generate_drops(df, num_drops)
+                    
+                    if drops:
+                        # Показываем статистику выпадений
+                        rarity_counts = {1: 0, 2: 0, 3: 0}
+                        for drop in drops:
+                            rarity_counts[drop['rarity']] += 1
+                        
+                        stat_col1, stat_col2, stat_col3 = st.columns(3)
+                        with stat_col1:
+                            st.metric("Редких выпало", rarity_counts[1])
+                        with stat_col2:
+                            st.metric("Средних выпало", rarity_counts[2])
+                        with stat_col3:
+                            st.metric("Частых выпало", rarity_counts[3])
+                        
+                        # Отображаем карточки в сетке
+                        st.markdown("### 🖼️ Выпавшие ингредиенты")
+                        
+                        # Создаем сетку
+                        cols_per_row = min(6, len(drops))  # Максимум 6 в ряду
+                        for i in range(0, len(drops), cols_per_row):
+                            cols = st.columns(cols_per_row)
+                            row_drops = drops[i:i+cols_per_row]
+                            
+                            for col_idx, drop in enumerate(row_drops):
+                                with cols[col_idx]:
+                                    display_ingredient_card(drop)
+                        
+                        # Кнопка для повторной генерации
+                        if st.button("🔄 Сгенерировать еще раз", type="secondary"):
+                            st.rerun()
+                    else:
+                        st.warning("Не удалось сгенерировать ингредиенты.")
+            else:
+                st.error("❌ Не удалось загрузить данные. Проверьте формат файла.")
                 
-                # Показываем статистику выпадений
-                rarity_counts = {1: 0, 2: 0, 3: 0}
-                for drop in drops:
-                    rarity_counts[drop['rarity']] += 1
-                
-                st_col1, st_col2, st_col3 = st.columns(3)
-                with st_col1:
-                    st.metric("Редких выпало", rarity_counts[1])
-                with st_col2:
-                    st.metric("Средних выпало", rarity_counts[2])
-                with st_col3:
-                    st.metric("Частых выпало", rarity_counts[3])
-                
-                # Отображаем карточки в сетке
-                st.markdown("### 🖼️ Выпавшие ингредиенты")
-                
-                # Создаем сетку карточек
-                cols_per_row = 6  # Количество карточек в ряду
-                rows = (len(drops) + cols_per_row - 1) // cols_per_row
-                
-                for row in range(rows):
-                    cols = st.columns(cols_per_row)
-                    for col_idx in range(cols_per_row):
-                        drop_idx = row * cols_per_row + col_idx
-                        if drop_idx < len(drops):
-                            with cols[col_idx]:
-                                display_ingredient_card(drops[drop_idx], "images")
-                
-                # Кнопка для повторной генерации с теми же параметрами
-                st.markdown("---")
-                if st.button("🔄 Сгенерировать еще раз", type="secondary"):
-                    st.rerun()
-        else:
-            st.error("❌ Не удалось загрузить данные. Проверьте формат файла.")
+        except Exception as e:
+            st.error(f"❌ Произошла ошибка: {str(e)}")
+            st.info("Попробуйте загрузить другой файл или перезапустить приложение.")
+    
     else:
         # Инструкция если файл не загружен
-        st.info("👈 Пожалуйста, загрузите Excel-файл через боковую панель.")
+        st.info("👈 **Начните с загрузки Excel-файла через боковую панель**")
         
-        # Пример структуры файла
-        with st.expander("📋 Как должен выглядеть Excel-файл?"):
-            st.markdown("""
-            | № | Название ингредиента | Файл изображения | Редкость |
-            |---|----------------------|------------------|----------|
-            | 1 | Яблоко               | apple.png        | 3        |
-            | 2 | Банан                | banana.png       | 3        |
-            | 3 | Дуриан               | durian.png       | 1        |
-            """)
-            st.markdown("""
-            **Важно:**
-            1. Первая строка должна содержать заголовки
-            2. Первый столбец (A) - нумерация
-            3. Второй столбец (B) - названия
-            4. Третий столбец (C) - имена файлов изображений (должны быть в папке `images`)
-            5. Четвертый столбец (D) - редкость (1-3, где 3 - самая частая)
-            """)
+        # Пример интерфейса
+        st.markdown("""
+        ### 🎯 Как использовать:
+        1. **Загрузите Excel-файл** с ингредиентами
+        2. **Укажите количество** ингредиентов для генерации
+        3. **Нажмите "Сгенерировать!"**
+        4. **Наслаждайтесь** результатами!
+        
+        ### 📋 Формат файла:
+        Файл должен содержать 4 столбца в следующем порядке:
+        
+        | № | Название ингредиента | Файл изображения | Редкость |
+        |---|----------------------|------------------|----------|
+        | 1 | Яблоко | apple.png | 3 |
+        | 2 | Банан | banana.png | 3 |
+        | 3 | Дуриан | durian.png | 1 |
+        
+        **Редкость:** 1-3, где 1 - самая редкая, 3 - самая частая
+        """)
 
 if __name__ == "__main__":
     main()
